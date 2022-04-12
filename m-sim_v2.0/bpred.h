@@ -83,6 +83,11 @@
  *		    PAg          : N, W, 2^W
  *		    PAp          : N, W, M (M == 2^(N+W))
  *
+ *  BPredPerceptron: predictor using perceptrons
+ *    
+ *    Params:
+ *    <perceptronsCount> <weightBits> <histLength>
+ *
  *	BPred2bit:  a simple direct mapped bimodal predictor
  *
  *		This predictor has a table of two bit saturating counters.
@@ -102,6 +107,7 @@ enum bpred_class {
   BPredComb,                    /* combined predictor (McFarling) */
   BPred2Level,			/* 2-level correlating pred w/2-bit counters */
   BPred2bit,			/* 2-bit saturating cntr pred (dir mapped) */
+  BPredPerceptron, /*predictor using perceptrons*/
   BPredTaken,			/* static predict taken */
   BPredNotTaken,		/* static predict not taken */
   BPred_NUM
@@ -131,6 +137,13 @@ struct bpred_dir_t {
       int *shiftregs;		/* level-1 history table */
       unsigned char *l2table;	/* level-2 prediction state table */
     } two;
+    struct {
+      int count;      /* number of perceptrons */
+      int weightBits; /* number of bits for each weight */
+      int histLength; /* number of bits for global history */
+      int *weights;   /* every perceptron is an array of weights */  
+      unsigned long long globalHistory;
+    } perceptron;
   } config;
 };
 
