@@ -59,6 +59,20 @@
 #include "machine.h"
 #include "bpred.h"
 
+/* maximum and minimum weight based on nr of available bits */
+#define MAX_WEIGHT(weightBits)   ((1<<((weightBits)-1))-1)
+#define MIN_WEIGHT(weightBits)   (-((MAX_WEIGHT(weightBits))+1))
+
+/* threshold for perceptron training */
+#define THETA(histLength)    ((int) (1.93 * (histLength) + 14))
+
+typedef struct {
+  int prediction;
+  int output;
+} result;
+
+result* res;
+
 /* turn this on to enable the SimpleScalar 2.0 RAS bug */
 /* #define RAS_BUG_COMPATIBLE */
 
@@ -104,6 +118,11 @@ bpred_create(enum bpred_class class,	/* type of predictor to create */
 
     break;
 
+  case BPredPerceptron:
+    pred->dirpred.bimod =
+      bpred_dir_create(class, bimod_size, l1size, shift_width, 0);   
+    break;
+
   case BPred2bit:
     pred->dirpred.bimod = 
       bpred_dir_create(class, bimod_size, 0, 0, 0);
@@ -122,6 +141,7 @@ bpred_create(enum bpred_class class,	/* type of predictor to create */
   case BPredComb:
   case BPred2Level:
   case BPred2bit:
+  case BPredPerceptron:
     {
       int i;
 
@@ -251,6 +271,23 @@ bpred_dir_create (
 
     break;
 
+  case BPredPerceptron:
+    if (!l1size)
+      fatal("number of perceptrons, `%d', must be non-zero and positive",l1size);
+    if (!l2size)
+      fatal("number of perceptrons, `%d', must be non-zero and positive",l2size);
+    if (!shift_width)
+      fatal("shift register width, `%d', must be non-zero and positive",shift_width);
+
+    pred_dir->config.perceptron.count = l1size;
+    pred_dir->config.perceptron.weightBits = l2size;
+    pred_dir->config.perceptron.histLength = shift_width;
+
+    if(!(pred_dir->config.perceptron.weights = calloc(l1size, sizeof(int)*(shift_width+1)))){
+      fatal("failed to allocate memory for perceptrons");
+    }
+    break;
+
   case BPredTaken:
   case BPredNotTaken:
     /* no other state */
@@ -281,6 +318,12 @@ bpred_dir_config(
   case BPred2bit:
     fprintf(stream, "pred_dir: %s: 2-bit: %d entries, direct-mapped\n",
       name, pred_dir->config.bimod.size);
+    break;
+
+  case BPredPerceptron:
+    fprintf(stream, "pred_dir: %s:  %d perceptrons, %d weight_bits, %d history bits\n",
+      name, pred_dir->config.perceptron.count, pred_dir->config.perceptron.weightBits,
+    pred_dir->config.perceptron.histLength);
     break;
 
   case BPredTaken:
@@ -325,6 +368,14 @@ bpred_config(struct bpred_t *pred,	/* branch predictor instance */
     fprintf(stream, "ret_stack: %d entries", pred->retstack.size);
     break;
 
+
+  case BPredPerceptron:
+    bpred_dir_config (pred->dirpred.bimod, "perceptron", stream); 
+      fprintf(stream, "btb: %d sets x %d associativity", 
+        pred->btb.sets, pred->btb.assoc);
+      fprintf(stream, "ret_stack: %d entries", pred->retstack.size);  
+    break;
+
   case BPredTaken:
     bpred_dir_config (pred->dirpred.bimod, "taken", stream);
     break;
@@ -355,6 +406,30 @@ bpred_reg_stats(struct bpred_t *pred,	/* branch predictor instance */
 		char* name)
 {
   char buf[512], buf1[512];
+
+  switch (pred->class)
+    {
+    case BPredComb:
+      name = "bpred_comb";
+      break;
+    case BPred2Level:
+      name = "bpred_2lev";
+      break;
+    case BPred2bit:
+      name = "bpred_bimod";
+      break;
+    case BPredPerceptron:
+      name = "bpred_perceptron";
+      break;
+    case BPredTaken:
+      name = "bpred_taken";
+      break;
+    case BPredNotTaken:
+      name = "bpred_nottaken";
+      break;
+    default:
+      panic("bogus branch predictor class");
+    }
 
   sprintf(buf, "%s.lookups", name);
   stat_reg_counter(sdb, buf, "total number of bpred lookups",
@@ -512,6 +587,28 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
     case BPred2bit:
       p = &pred_dir->config.bimod.table[BIMOD_HASH(pred_dir, baddr)];
       break;
+    case BPredPerceptron:{
+      int index = baddr % pred_dir->config.perceptron.count;
+      int *w = &pred_dir->config.perceptron.weights[index*pred_dir->config.perceptron.histLength];
+      int output = *w;
+      w++;
+      unsigned long long mask = 1;
+      for (int i = 1; i < pred_dir->config.perceptron.histLength; ++i)
+      {
+        if (pred_dir->config.perceptron.globalHistory & (mask << i))
+        {
+          output += *w;
+        } else{
+          output -= *w;
+        }
+        w++;
+        res = calloc(1, sizeof(result));
+        res->prediction = output >= 0;
+        res->output = output;
+        p =  &res;
+      }
+      break;
+    }
     case BPredTaken:
     case BPredNotTaken:
       break;
@@ -589,6 +686,7 @@ bpred_lookup(struct bpred_t *pred,	/* branch predictor instance */
 	}
       break;
     case BPred2bit:
+    case BPredPerceptron:
       if ((MD_OP_FLAGS(op) & (F_CTRL|F_UNCOND)) != (F_CTRL|F_UNCOND))
 	{
 	  dir_update_ptr->pdir1 =
@@ -893,7 +991,38 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
   /* update state (but not for jumps) */
   if (dir_update_ptr->pdir1)
     {
-      if (taken)
+      if(pred->class == BPredPerceptron){
+        result *r = (result *) dir_update_ptr->pdir1;
+        pred->dirpred.bimod->config.perceptron.globalHistory <<= 1;
+        pred->dirpred.bimod->config.perceptron.globalHistory |= taken;
+        int yout;
+        int theta = THETA(pred->dirpred.bimod->config.perceptron.histLength);
+        if(r->output > theta){
+          yout = 1;
+        }else if(-theta <= r->output && r->output <=theta){
+          yout = 0;
+        }else if(r->output < -theta){
+          yout = -1;
+        }
+        if(yout !=taken){
+          int index = baddr % pred->dirpred.bimod->config.perceptron.count;
+          int *w = &pred->dirpred.bimod->config.perceptron.weights[index*pred->dirpred.bimod->config.perceptron.histLength];
+          *w +=taken;
+          w++;
+          for (int i = 1; i < pred->dirpred.bimod->config.perceptron.histLength; ++i)
+          {
+            int mask=1;
+            if (pred->dirpred.bimod->config.perceptron.globalHistory & (mask << i)) {
+              *w +=taken;
+            }
+            else{
+              *w -=taken;
+            }
+            w++;
+          }
+        }
+      }
+  if (taken)
 	{
 	  if (*dir_update_ptr->pdir1 < 3)
 	    ++*dir_update_ptr->pdir1;
