@@ -69,9 +69,12 @@
 typedef struct {
   int prediction;
   int output;
+  int *weights;
 } result;
 
 result* res;
+
+long goodPred=0, badPred=0;
 
 /* turn this on to enable the SimpleScalar 2.0 RAS bug */
 /* #define RAS_BUG_COMPATIBLE */
@@ -90,6 +93,10 @@ bpred_create(enum bpred_class class,	/* type of predictor to create */
 	     unsigned int retstack_size) /* num entries in ret-addr stack */
 {
   struct bpred_t *pred;
+  if (!(res = calloc(1, sizeof(result))))
+  {
+    fatal("failed to allocate memory for res");
+  }
 
   if (!(pred = calloc(1, sizeof(struct bpred_t))))
     fatal("out of virtual memory");
@@ -515,6 +522,14 @@ bpred_reg_stats(struct bpred_t *pred,	/* branch predictor instance */
   stat_reg_formula(sdb, buf,
 		   "RAS prediction rate (i.e., RAS hits/used RAS)",
 		   buf1, "%9.4f");
+  if (pred->class == BPredPerceptron){
+    sprintf(buf, "%s.goodPred", name);
+      stat_reg_counter(sdb, buf, "total number of good predictions",
+           &goodPred, 0, NULL);
+    sprintf(buf, "%s.badPred", name);
+    stat_reg_counter(sdb, buf, "total number of bad predictions",
+         &badPred, 0, NULL);
+  }
 }
 
 void
@@ -591,9 +606,10 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
       int index = baddr % pred_dir->config.perceptron.count;
       int *w = &pred_dir->config.perceptron.weights[index*pred_dir->config.perceptron.histLength];
       int output = *w;
-      w++;
+      res->weights = w;
+      int output =  0;
       unsigned long long mask = 1;
-      for (int i = 1; i < pred_dir->config.perceptron.histLength; ++i)
+      for (int i = 0; i < pred_dir->config.perceptron.histLength; ++i)
       {
         if (pred_dir->config.perceptron.globalHistory & (mask << i))
         {
@@ -602,10 +618,9 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
           output -= *w;
         }
         w++;
-        res = calloc(1, sizeof(result));
         res->prediction = output >= 0;
         res->output = output;
-        p =  &res;
+        p =  res;
       }
       break;
     }
@@ -992,10 +1007,12 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
   if (dir_update_ptr->pdir1)
     {
       if(pred->class == BPredPerceptron){
-        result *r = (result *) dir_update_ptr->pdir1;
+        result * r = (result *) dir_update_ptr->pdir1;
         pred->dirpred.bimod->config.perceptron.globalHistory <<= 1;
         pred->dirpred.bimod->config.perceptron.globalHistory |= taken;
+        pred->dirpred.bimod->config.perceptron.globalHistory %= (1<<(pred->dirpred.bimod->config.perceptron.histLength-1));
         int yout;
+        // result *r = res;
         int theta = THETA(pred->dirpred.bimod->config.perceptron.histLength);
         if(r->output > theta){
           yout = 1;
@@ -1004,22 +1021,28 @@ bpred_update(struct bpred_t *pred,	/* branch predictor instance */
         }else if(r->output < -theta){
           yout = -1;
         }
+        int *w;
+        w = r->weights;
         if(yout !=taken){
-          int index = baddr % pred->dirpred.bimod->config.perceptron.count;
-          int *w = &pred->dirpred.bimod->config.perceptron.weights[index*pred->dirpred.bimod->config.perceptron.histLength];
-          *w +=taken;
-          w++;
-          for (int i = 1; i < pred->dirpred.bimod->config.perceptron.histLength; ++i)
+          // *(r->weights) +=taken;
+          // r->weights++;
+          for (int i = 0; i < pred->dirpred.bimod->config.perceptron.histLength; ++i)
           {
             int mask=1;
             if (pred->dirpred.bimod->config.perceptron.globalHistory & (mask << i)) {
-              *w +=taken;
+              *(r->weights) +=taken;
             }
             else{
-              *w -=taken;
+              *(r->weights) -=taken;
             }
-            w++;
+            r->weights++;
           }
+        }
+
+        if(taken == r->prediction){
+          goodPred++;
+        }else{
+          badPred++;
         }
       }
   if (taken)
