@@ -67,6 +67,7 @@
 #define THETA(histLength)    ((int) (1.93 * (histLength) + 14))
 
 typedef struct {
+  char dummy; 
   int prediction;
   int output;
   int *weights;
@@ -605,7 +606,6 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
     case BPredPerceptron:{
       int index = baddr % pred_dir->config.perceptron.count;
       int *w = &pred_dir->config.perceptron.weights[index*pred_dir->config.perceptron.histLength];
-      int output = *w;
       res->weights = w;
       int output =  0;
       unsigned long long mask = 1;
@@ -620,6 +620,7 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
         w++;
         res->prediction = output >= 0;
         res->output = output;
+        res->dummy = res->prediction ? 3 : 0;
         p =  res;
       }
       break;
@@ -630,7 +631,6 @@ bpred_dir_lookup(struct bpred_dir_t *pred_dir,	/* branch dir predictor inst */
     default:
       panic("bogus branch direction predictor class");
     }
-
   return (char *)p;
 }
 

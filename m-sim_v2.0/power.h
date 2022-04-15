@@ -530,6 +530,8 @@ typedef struct {
 
   double clock_power;
 
+  double bpred_perceptron_power;
+
 } power_result_type;
 
 /* Used to pass values around the program */
