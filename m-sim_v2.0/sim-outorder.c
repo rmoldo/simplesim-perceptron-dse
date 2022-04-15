@@ -145,7 +145,7 @@ static int ifq_size;
 static int fetch_speed;
 
 /* branch predictor type {nottaken|taken|perfect|bimod|2lev|perceptron} */
-static char *pred_type;
+char *pred_type;
 
 /* bimodal predictor config (<table_size>) */
 static int bimod_nelt = 1;
