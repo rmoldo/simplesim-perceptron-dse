@@ -144,8 +144,8 @@ static int ifq_size;
 /* speed of front-end of machine relative to execution core */
 static int fetch_speed;
 
-/* branch predictor type {nottaken|taken|perfect|bimod|2lev} */
-static char *pred_type;
+/* branch predictor type {nottaken|taken|perfect|bimod|2lev|perceptron} */
+char *pred_type;
 
 /* bimodal predictor config (<table_size>) */
 static int bimod_nelt = 1;
@@ -156,6 +156,11 @@ int bimod_config[1] =
 static int twolev_nelt = 4;
 int twolev_config[4] =
   { /* l1size */1, /* l2size */1024, /* hist */8, /* xor */FALSE};
+
+/* neural predictor config (<perceptronsCount> <weightBits> <histLength>) */
+static int perceptron_nelt = 3;
+int perceptron_config[3] = 
+  {/* perceptronsCount */1024, /* weight bits */6, /* history length */16  };
 
 /* combining predictor config (<meta_table_size> */
 static int comb_nelt = 1;
@@ -917,7 +922,7 @@ sim_reg_options(struct opt_odb_t *odb)
                );
 
   opt_reg_string(odb, "-bpred",
-		 "branch predictor type {nottaken|taken|perfect|bimod|2lev|comb}",
+		 "branch predictor type {nottaken|taken|perfect|bimod|2lev|comb|perceptron}",
                  &pred_type, /* default */"bimod",
                  /* print */TRUE, /* format */NULL);
 
@@ -933,6 +938,13 @@ sim_reg_options(struct opt_odb_t *odb)
                    twolev_config, twolev_nelt, &twolev_nelt,
 		   /* default */twolev_config,
                    /* print */TRUE, /* format */NULL, /* !accrue */FALSE);
+
+  opt_reg_int_list(odb, "-bpred:perceptron",
+         "perceptron configuration" 
+               "(<perceptronsCount> <weight_bits> <history_length>)",
+         perceptron_config, perceptron_nelt, &perceptron_nelt,
+         /* default */perceptron_config,  
+                     /* print */TRUE, /* format */NULL, /* !accure */FALSE);
 
   opt_reg_int_list(odb, "-bpred:comb",
 		   "combining predictor config (<meta_table_size>)",
@@ -1234,6 +1246,7 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
   if (fetch_speed < 1)
     fatal("front-end speed must be positive and non-zero");
 
+  printf("*****\nPREDICTOR: %s\n*****\n", pred_type);
   for(i = 0; i < MAX_CONTEXTS;i++)
     {
       if (!mystricmp(pred_type, "perfect"))
@@ -1291,6 +1304,22 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
 			      /* btb assoc */btb_config[1],
 			      /* ret-addr stack size */ras_size);
 	}
+  else if(!mystricmp(pred_type, "perceptron")){
+    if(perceptron_nelt != 3){
+      fatal("bad configuration for perceptron: <perceptronsCount> <weightBits> <histLength>");
+    }
+
+    printf("PRCPTRON:\n count: %d , weightBits: %d, histLen: %d", perceptron_config[0],perceptron_config[1],perceptron_config[2]);
+
+     contexts[i].pred = bpred_create(BPredPerceptron,
+        /* perceptronsCount */  perceptron_config[0],
+        /* weightBits */        perceptron_config[1],0,0, 
+        /* histLength */        perceptron_config[2],0,
+        /* btb sets */          btb_config[0],
+        /* btb assoc */         btb_config[1],
+        /* ret-addr stack size */ras_size
+      );
+  }
       else if (!mystricmp(pred_type, "comb"))
 	{
 	  /* combining predictor, bpred_create() checks args */
@@ -1718,6 +1747,9 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
 	case BPred2bit:
 	  name = "bpred_bimod";
 	  break;
+  case BPredPerceptron:
+    name = "bpred_perceptron";
+    break;
 	case BPredTaken:
 	  name = "bpred_taken";
 	  break;

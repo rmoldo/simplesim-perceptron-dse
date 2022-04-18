@@ -125,6 +125,9 @@ int npreg_width;
 
 extern int bimod_config[];
 
+extern int perceptron_config[];
+extern char *pred_type;
+
 extern struct cache_t *cache_dl1;
 extern struct cache_t *cache_il1;
 extern struct cache_t *cache_dl2;
@@ -159,6 +162,8 @@ static double falu_power=0;
 static double resultbus_power=0;
 static double clock_power=0;
 
+static double bpred_perceptron_power = 0;
+
 static double rename_power_cc1=0;
 static double bpred_power_cc1=0;
 static double window_power_cc1=0;
@@ -171,6 +176,8 @@ static double alu_power_cc1=0;
 static double resultbus_power_cc1=0;
 static double clock_power_cc1=0;
 
+static double bpred_perceptron_power_cc1 = 0;
+
 static double rename_power_cc2=0;
 static double bpred_power_cc2=0;
 static double window_power_cc2=0;
@@ -182,6 +189,7 @@ static double dcache2_power_cc2=0;
 static double alu_power_cc2=0;
 static double resultbus_power_cc2=0;
 static double clock_power_cc2=0;
+static double bpred_perceptron_power_cc2 = 0;
 
 static double rename_power_cc3=0;
 static double bpred_power_cc3=0;
@@ -194,6 +202,10 @@ static double dcache2_power_cc3=0;
 static double alu_power_cc3=0;
 static double resultbus_power_cc3=0;
 static double clock_power_cc3=0;
+static double ialu_power_cc3=0;
+static double falu_power_cc3=0;
+
+static double bpred_perceptron_power_cc3 = 0;
 
 static double total_cycle_power;
 static double total_cycle_power_cc1;
@@ -382,12 +394,21 @@ void update_power_stats()
     rename_power_cc3+=turnoff_factor*power.rename_power;
 
   if(bpred_access) {
-    if(bpred_access <= 2)
-      bpred_power_cc1+=power.bpred_power;
+    if (!mystricmp(pred_type, "perceptron")) 
+    {
+      bpred_power_cc1 += ((double)bpred_access) * power.bpred_power;
+      bpred_power_cc2 += ((double)bpred_access) * power.bpred_power;
+      bpred_power_cc3 += ((double)bpred_access) * power.bpred_power;
+    }
     else
-      bpred_power_cc1+=((double)bpred_access/2.0) * power.bpred_power;
-    bpred_power_cc2+=((double)bpred_access/2.0) * power.bpred_power;
-    bpred_power_cc3+=((double)bpred_access/2.0) * power.bpred_power;
+    {
+      if(bpred_access <= 2)
+        bpred_power_cc1+=power.bpred_power;
+      else
+        bpred_power_cc1+=((double)bpred_access/2.0) * power.bpred_power;
+      bpred_power_cc2+=((double)bpred_access/2.0) * power.bpred_power;
+      bpred_power_cc3+=((double)bpred_access/2.0) * power.bpred_power;
+    } 
   }
   else
     bpred_power_cc3+=turnoff_factor*power.bpred_power;
@@ -536,20 +557,28 @@ void update_power_stats()
   if(alu_access) {
     if(ialu_access)
       alu_power_cc1+=power.ialu_power;
-    else
+    else{
       alu_power_cc3+=turnoff_factor*power.ialu_power;
+  ialu_power_cc3+=turnoff_factor*power.ialu_power;
+    }
     if(falu_access)
       alu_power_cc1+=power.falu_power;
-    else
+    else{
       alu_power_cc3+=turnoff_factor*power.falu_power;
-
+  falu_power_cc3+=turnoff_factor*power.falu_power;
+    }
     alu_power_cc2+=((double)ialu_access/(double)res_ialu)*power.ialu_power +
       ((double)falu_access/(double)res_fpalu)*power.falu_power;
     alu_power_cc3+=((double)ialu_access/(double)res_ialu)*power.ialu_power +
       ((double)falu_access/(double)res_fpalu)*power.falu_power;
+    ialu_power_cc3+=((double)ialu_access/(double)res_ialu)*power.ialu_power;
+    falu_power_cc3+=((double)falu_access/(double)res_fpalu)*power.falu_power;
   }
-  else
+  else{
     alu_power_cc3+=turnoff_factor*(power.ialu_power + power.falu_power);
+    ialu_power_cc3+=turnoff_factor*power.ialu_power;
+    falu_power_cc3+=turnoff_factor*power.falu_power;
+  }
 
 #ifdef STATIC_AF
   if(resultbus_access) {
@@ -1051,9 +1080,15 @@ void dump_power_stats(power)
   itlb_power = power->itlb;
   dtlb_power = power->dtlb;
 
-  bpred_power = power->btb + power->local_predict + power->global_predict + 
+    if (!mystricmp(pred_type, "perceptron"))
+  {
+    bpred_power = power->bpred_power;
+  }
+  else
+  {
+    bpred_power = power->btb + power->local_predict + power->global_predict + 
     power->chooser + power->ras;
-
+  }
   rat_power = power->rat_decoder + 
     power->rat_wordline + power->rat_bitline + power->rat_senseamp;
 
@@ -1795,6 +1830,9 @@ void calculate_power(power)
   int trowsb, tcolsb, tagsize;
   int va_size = 48;
 
+  int perceptron_table_cols = perceptron_config[2] /*history length*/ + 1/*w0*/;
+  int perceptron_table_rows = perceptron_config[0] /*nr of perceptrons*/;
+
   int npreg_width = (int)ceil(logtwo((double)ROB_size));
 
   /* these variables are needed to use Cacti to auto-size cache arrays 
@@ -1995,6 +2033,24 @@ void calculate_power(power)
   if(verbose)
     fprintf(stderr,"RAS predict power stats\n");
   power->ras = simple_array_power(ras_size,data_width,1,1,0);
+
+   if (!mystricmp(pred_type, "perceptron"))
+  {
+    if(verbose)
+      fprintf(stderr,"Perceptron table size == %d\n",perceptron_table_cols*perceptron_table_rows);
+    cache = 1;
+    scale_factor = squarify(perceptron_table_rows, perceptron_table_cols);
+    predeclength = perceptron_table_rows/scale_factor * (RegCellHeight + WordlineSpacing);
+    wordlinelength = perceptron_table_cols*scale_factor *  (RegCellWidth + BitlineSpacing);
+    bitlinelength = perceptron_table_rows/scale_factor * (RegCellHeight + WordlineSpacing);
+    if(verbose)
+      fprintf(stderr,"LVPT power stats\n");
+    power->bpred_power = 
+          array_decoder_power (perceptron_table_rows/scale_factor, perceptron_table_cols*scale_factor, predeclength,1,1,cache) + 
+          array_wordline_power(perceptron_table_rows/scale_factor, perceptron_table_cols*scale_factor, wordlinelength,1,1,cache) + 
+          array_bitline_power (perceptron_table_rows/scale_factor, perceptron_table_cols*scale_factor, bitlinelength,1,1,cache) + 
+          senseamp_power      (perceptron_table_cols*scale_factor);
+  }
 
   tagsize = va_size - ((int)logtwo(cache_dl1->nsets) + (int)logtwo(cache_dl1->bsize));
 
@@ -2234,53 +2290,101 @@ void calculate_power(power)
 
   power->dcache2_power *= crossover_scaling;
 
-  power->total_power = power->local_predict + power->global_predict + 
-    power->chooser + power->btb +
-    power->rat_decoder + power->rat_wordline + 
-    power->rat_bitline + power->rat_senseamp + 
-    power->dcl_compare + power->dcl_pencode + 
-    power->inst_decoder_power +
-    power->wakeup_tagdrive + power->wakeup_tagmatch + 
-    power->selection +
-    power->regfile_decoder + power->regfile_wordline + 
-    power->regfile_bitline + power->regfile_senseamp +  
-    power->rs_decoder + power->rs_wordline +
-    power->rs_bitline + power->rs_senseamp + 
-    power->lsq_wakeup_tagdrive + power->lsq_wakeup_tagmatch +
-    power->lsq_rs_decoder + power->lsq_rs_wordline +
-    power->lsq_rs_bitline + power->lsq_rs_senseamp +
-    power->resultbus +
-    power->clock_power +
-    power->icache_power + 
-    power->itlb + 
-    power->dcache_power + 
-    power->dtlb + 
-    power->dcache2_power;
-
-  power->total_power_nodcache2 =power->local_predict + power->global_predict + 
-    power->chooser + power->btb +
-    power->rat_decoder + power->rat_wordline + 
-    power->rat_bitline + power->rat_senseamp + 
-    power->dcl_compare + power->dcl_pencode + 
-    power->inst_decoder_power +
-    power->wakeup_tagdrive + power->wakeup_tagmatch + 
-    power->selection +
-    power->regfile_decoder + power->regfile_wordline + 
-    power->regfile_bitline + power->regfile_senseamp +  
-    power->rs_decoder + power->rs_wordline +
-    power->rs_bitline + power->rs_senseamp + 
-    power->lsq_wakeup_tagdrive + power->lsq_wakeup_tagmatch +
-    power->lsq_rs_decoder + power->lsq_rs_wordline +
-    power->lsq_rs_bitline + power->lsq_rs_senseamp +
-    power->resultbus +
-    power->clock_power +
-    power->icache_power + 
-    power->itlb + 
-    power->dcache_power + 
-    power->dtlb + 
-    power->dcache2_power;
-
-  power->bpred_power = power->btb + power->local_predict + power->global_predict + power->chooser + power->ras;
+  if (!mystricmp(pred_type, "perceptron"))
+  {
+    power->bpred_power *= crossover_scaling;
+    
+    power->total_power = power->bpred_power +
+      power->rat_decoder + power->rat_wordline + 
+      power->rat_bitline + power->rat_senseamp + 
+      power->dcl_compare + power->dcl_pencode + 
+      power->inst_decoder_power +
+      power->wakeup_tagdrive + power->wakeup_tagmatch + 
+      power->selection +
+      power->regfile_decoder + power->regfile_wordline + 
+      power->regfile_bitline + power->regfile_senseamp +  
+      power->rs_decoder + power->rs_wordline +
+      power->rs_bitline + power->rs_senseamp + 
+      power->lsq_wakeup_tagdrive + power->lsq_wakeup_tagmatch +
+      power->lsq_rs_decoder + power->lsq_rs_wordline +
+      power->lsq_rs_bitline + power->lsq_rs_senseamp +
+      power->resultbus +
+      power->clock_power +
+      power->icache_power + 
+      power->itlb + 
+      power->dcache_power + 
+      power->dtlb + 
+      power->dcache2_power;
+    power->total_power_nodcache2 = power->bpred_power +
+      power->rat_decoder + power->rat_wordline + 
+      power->rat_bitline + power->rat_senseamp + 
+      power->dcl_compare + power->dcl_pencode + 
+      power->inst_decoder_power +
+      power->wakeup_tagdrive + power->wakeup_tagmatch + 
+      power->selection +
+      power->regfile_decoder + power->regfile_wordline + 
+      power->regfile_bitline + power->regfile_senseamp +  
+      power->rs_decoder + power->rs_wordline +
+      power->rs_bitline + power->rs_senseamp + 
+      power->lsq_wakeup_tagdrive + power->lsq_wakeup_tagmatch +
+      power->lsq_rs_decoder + power->lsq_rs_wordline +
+      power->lsq_rs_bitline + power->lsq_rs_senseamp +
+      power->resultbus +
+      power->clock_power +
+      power->icache_power + 
+      power->itlb + 
+      power->dcache_power + 
+      power->dtlb + 
+      power->dcache2_power;
+  }
+  else
+  {
+    power->total_power = power->local_predict + power->global_predict + 
+      power->chooser + power->btb +
+      power->rat_decoder + power->rat_wordline + 
+      power->rat_bitline + power->rat_senseamp + 
+      power->dcl_compare + power->dcl_pencode + 
+      power->inst_decoder_power +
+      power->wakeup_tagdrive + power->wakeup_tagmatch + 
+      power->selection +
+      power->regfile_decoder + power->regfile_wordline + 
+      power->regfile_bitline + power->regfile_senseamp +  
+      power->rs_decoder + power->rs_wordline +
+      power->rs_bitline + power->rs_senseamp + 
+      power->lsq_wakeup_tagdrive + power->lsq_wakeup_tagmatch +
+      power->lsq_rs_decoder + power->lsq_rs_wordline +
+      power->lsq_rs_bitline + power->lsq_rs_senseamp +
+      power->resultbus +
+      power->clock_power +
+      power->icache_power + 
+      power->itlb + 
+      power->dcache_power + 
+      power->dtlb + 
+      power->dcache2_power;
+    power->total_power_nodcache2 =power->local_predict + power->global_predict + 
+      power->chooser + power->btb +
+      power->rat_decoder + power->rat_wordline + 
+      power->rat_bitline + power->rat_senseamp + 
+      power->dcl_compare + power->dcl_pencode + 
+      power->inst_decoder_power +
+      power->wakeup_tagdrive + power->wakeup_tagmatch + 
+      power->selection +
+      power->regfile_decoder + power->regfile_wordline + 
+      power->regfile_bitline + power->regfile_senseamp +  
+      power->rs_decoder + power->rs_wordline +
+      power->rs_bitline + power->rs_senseamp + 
+      power->lsq_wakeup_tagdrive + power->lsq_wakeup_tagmatch +
+      power->lsq_rs_decoder + power->lsq_rs_wordline +
+      power->lsq_rs_bitline + power->lsq_rs_senseamp +
+      power->resultbus +
+      power->clock_power +
+      power->icache_power + 
+      power->itlb + 
+      power->dcache_power + 
+      power->dtlb + 
+      power->dcache2_power;
+    power->bpred_power = power->btb + power->local_predict + power->global_predict + power->chooser + power->ras;
+  }
 
   power->rat_power = power->rat_decoder + 
     power->rat_wordline + power->rat_bitline + power->rat_senseamp;
